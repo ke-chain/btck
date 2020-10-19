@@ -12,7 +12,6 @@ import (
 func main() {
 	nodeURL := "127.0.0.1:9333"
 	// Create version message data.
-	lastBlock := int32(234234)
 	tcpAddrMe := &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 9334}
 	me := wire.NewNetAddress(tcpAddrMe, wire.SFNodeNetwork)
 	tcpAddrYou := &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 9333}
@@ -21,17 +20,21 @@ func main() {
 	if err != nil {
 		fmt.Printf("RandomUint64: error generating nonce: %v", err)
 	}
-
-	// Ensure we get the correct data back out.
+	lastBlock := int32(0)
 	msg := wire.NewMsgVersion(me, you, nonce, lastBlock)
 	msg.AddService(wire.SFNodeNetwork)
+
+	// Create conn
 	conn, err := net.Dial("tcp", nodeURL)
 	if err != nil {
 		logrus.Fatalln(err)
 	}
 	defer conn.Close()
 
+	// create peer
 	p := peer.NewPeerTemp(conn)
+
+	// send  version to Server Node
 	err = p.WriteMessage(msg, wire.LatestEncoding)
 
 	if err != nil {
@@ -41,11 +44,15 @@ func main() {
 	for {
 		remoteMsg, _, err := p.ReadMessage(wire.LatestEncoding)
 		switch remoteMsg.Command() {
+
+		// recieve  Version msg
 		case wire.CmdVersion:
 			logrus.Info(remoteMsg.Command(), msg.ProtocolVersion)
 
+		// recieve  VerAck msg
 		case wire.CmdVerAck:
 			logrus.Info(remoteMsg.Command())
+			p.WriteMessage(wire.NewMsgVerAck(), wire.LatestEncoding)
 			return
 		}
 

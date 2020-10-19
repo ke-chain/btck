@@ -1,7 +1,6 @@
 package peer
 
 import (
-	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -72,13 +71,12 @@ func (p *Peer) ReadMessage(encoding wire.MessageEncoding) (wire.Message, []byte,
 func (p *Peer) WriteMessage(msg wire.Message, enc wire.MessageEncoding) error {
 
 	// Write the message to the peer.
-	n, err := wire.WriteMessageWithEncodingN(p.conn, msg,
+	_, err := wire.WriteMessageWithEncodingN(p.conn, msg,
 		p.ProtocolVersion(), wire.SimNet, enc)
-	fmt.Println(n)
 	return err
 }
 
-// NewPeerTemp is for test,will delete late
+// NewPeerTemp is for test,will delete later
 func NewPeerTemp(conn net.Conn) *Peer {
 
 	return &Peer{conn: conn}
