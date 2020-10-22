@@ -7,7 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/ke-chain/btck/chainhash"
+	"github.com/ke-chain/btck/chaincfg/chainhash"
 )
 
 // MessageHeaderSize is the number of bytes in a bitcoin message header.
@@ -45,6 +45,8 @@ const MaxMessagePayload = (1024 * 1024 * 32) // 32MB
 const (
 	CmdVersion = "version"
 	CmdVerAck  = "verack"
+	CmdPing    = "ping"
+	CmdPong    = "pong"
 )
 
 // Message is an interface that describes a bitcoin message.  A type that
@@ -75,6 +77,11 @@ func makeEmptyMessage(command string) (Message, error) {
 		msg = &MsgVersion{}
 	case CmdVerAck:
 		msg = &MsgVerAck{}
+	case CmdPing:
+		msg = &MsgPing{}
+
+	case CmdPong:
+		msg = &MsgPong{}
 
 	default:
 		return nil, fmt.Errorf("unhandled command [%s]", command)

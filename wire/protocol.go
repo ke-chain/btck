@@ -28,11 +28,41 @@ const (
 	// bloom filtering related messages and extended the version message
 	// with a relay flag (pver >= BIP0037Version).
 	BIP0037Version uint32 = 70001
+
+	// FeeFilterVersion is the protocol version which added a new
+	// feefilter message.
+	FeeFilterVersion uint32 = 70013
 )
 
 const (
 	// SFNodeNetwork is a flag used to indicate a peer is a full node.
 	SFNodeNetwork ServiceFlag = 1 << iota
+	// SFNodeGetUTXO is a flag used to indicate a peer supports the
+	// getutxos and utxos commands (BIP0064).
+	SFNodeGetUTXO
+
+	// SFNodeBloom is a flag used to indicate a peer supports bloom
+	// filtering.
+	SFNodeBloom
+
+	// SFNodeWitness is a flag used to indicate a peer supports blocks
+	// and transactions including witness data (BIP0144).
+	SFNodeWitness
+
+	// SFNodeXthin is a flag used to indicate a peer supports xthin blocks.
+	SFNodeXthin
+
+	// SFNodeBit5 is a flag used to indicate a peer supports a service
+	// defined by bit 5.
+	SFNodeBit5
+
+	// SFNodeCF is a flag used to indicate a peer supports committed
+	// filters (CFs).
+	SFNodeCF
+
+	// SFNode2X is a flag used to indicate a peer is running the Segwit2X
+	// software.
+	SFNode2X
 )
 
 const (
