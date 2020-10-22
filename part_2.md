@@ -8,7 +8,7 @@
 
 
 ## 1.2代码地址
-
+[图说比特币 Part 2:心跳信息](https://github.com/ke-chain/btck/tree/part_2)
 ## 1.3 心跳信息
 ![](./images/pingpong_s.png)
 
