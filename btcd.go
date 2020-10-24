@@ -1,13 +1,9 @@
 package main
 
 import (
-	"log"
-	"net"
 	"os"
 	"runtime"
 	"runtime/debug"
-
-	"github.com/ke-chain/btck/peer"
 )
 
 var (
@@ -39,21 +35,21 @@ func btcdMain() error {
 	// triggered either from an OS signal such as SIGINT (Ctrl+C) or from
 	// another subsystem such as the RPC server.
 	interrupt := interruptListener()
-	defer btcdLog.Info("Shutdown complete")
-	btcdLog.Info("Snf")
-	nodeURL := "127.0.0.1:9333"
-	conn, err := net.Dial("tcp", nodeURL)
-	if err != nil {
-		log.Fatal(err)
-	}
 
-	// Create version message data.
-	p, err := peer.NewOutboundPeerTemp(newPeerConfig(), nodeURL)
+	// Create server and start it.
+	server, err := newServer()
 	if err != nil {
-		srvrLog.Debugf("Cannot create outbound peer %s: %v", nodeURL, err)
+		// TODO: this logging could do with some beautifying.
+		btcdLog.Errorf("Unable to start server on : %v", err)
 		return err
 	}
-	p.AssociateConnection(conn)
+	defer func() {
+		btcdLog.Infof("Gracefully shutting down the server...")
+		server.Stop()
+		server.WaitForShutdown()
+		srvrLog.Infof("Server shutdown complete")
+	}()
+	server.Start()
 
 	// Wait until the interrupt signal is received from an OS signal or
 	// shutdown is requested through one of the subsystems such as the RPC

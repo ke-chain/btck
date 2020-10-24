@@ -7,6 +7,10 @@ import (
 
 	"github.com/ke-chain/btck/peer"
 
+	"github.com/ke-chain/btck/netsync"
+
+	"github.com/ke-chain/btck/connmgr"
+
 	"github.com/btcsuite/btclog"
 	"github.com/jrick/logrotate/rotator"
 )
@@ -42,10 +46,14 @@ var (
 	btcdLog    = backendLog.Logger("BTCD")
 	peerLog    = backendLog.Logger("PEER")
 	srvrLog    = backendLog.Logger("SRVR")
+	syncLog    = backendLog.Logger("SYNC")
+	cmgrLog    = backendLog.Logger("CMGR")
 )
 
 func init() {
 	peer.UseLogger(peerLog)
+	netsync.UseLogger(syncLog)
+	connmgr.UseLogger(cmgrLog)
 }
 
 // subsystemLoggers maps each subsystem identifier to its associated logger.
@@ -53,6 +61,8 @@ var subsystemLoggers = map[string]btclog.Logger{
 	"BTCD": btcdLog,
 	"PEER": peerLog,
 	"SRVR": srvrLog,
+	"CMGR": cmgrLog,
+	"SYNC": syncLog,
 }
 
 // initLogRotator initializes the logging rotater to write logs to logFile and

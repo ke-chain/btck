@@ -18,6 +18,11 @@ import (
 )
 
 const (
+
+	// DefaultTrickleInterval is the min time between attempts to send an
+	// inv message to a peer.
+	DefaultTrickleInterval = 10 * time.Second
+
 	// MaxProtocolVersion is the max protocol version the peer supports.
 	MaxProtocolVersion = wire.FeeFilterVersion
 
@@ -92,6 +97,7 @@ type Peer struct {
 	advertisedProtoVer uint32 // protocol version advertised by remote
 	protocolVersion    uint32 // negotiated protocol version
 	verAckReceived     bool
+	witnessEnabled     bool
 
 	wireEncoding wire.MessageEncoding
 
@@ -99,15 +105,16 @@ type Peer struct {
 	// by the statsMtx mutex.
 	statsMtx       sync.RWMutex
 	timeConnected  time.Time
+	startingHeight int32
+	lastBlock      int32
 	lastPingNonce  uint64    // Set to nonce if we have a pending ping.
 	lastPingTime   time.Time // Time we sent last ping.
 	lastPingMicros int64     // Time for last ping to return.
 
-	outputQueue   chan outMsg
-	sendQueue     chan outMsg
-	sendDoneQueue chan struct{}
-	inQuit        chan struct{}
-	quit          chan struct{}
+	outputQueue chan outMsg
+	sendQueue   chan outMsg
+	inQuit      chan struct{}
+	quit        chan struct{}
 }
 
 // Config is the struct to hold configuration options useful to Peer.
@@ -155,6 +162,18 @@ type outMsg struct {
 	encoding wire.MessageEncoding
 }
 
+// IsWitnessEnabled returns true if the peer has signalled that it supports
+// segregated witness.
+//
+// This function is safe for concurrent access.
+func (p *Peer) IsWitnessEnabled() bool {
+	p.flagsMtx.Lock()
+	witnessEnabled := p.witnessEnabled
+	p.flagsMtx.Unlock()
+
+	return witnessEnabled
+}
+
 // ProtocolVersion returns the negotiated peer protocol version.
 //
 // This function is safe for concurrent access.
@@ -164,6 +183,63 @@ func (p *Peer) ProtocolVersion() uint32 {
 	p.flagsMtx.Unlock()
 
 	return protocolVersion
+}
+
+// LastBlock returns the last block of the peer.
+//
+// This function is safe for concurrent access.
+func (p *Peer) LastBlock() int32 {
+	p.statsMtx.RLock()
+	lastBlock := p.lastBlock
+	p.statsMtx.RUnlock()
+
+	return lastBlock
+}
+
+// VerAckReceived returns whether or not a verack message was received by the
+// peer.
+//
+// This function is safe for concurrent access.
+func (p *Peer) VerAckReceived() bool {
+	p.flagsMtx.Lock()
+	verAckReceived := p.verAckReceived
+	p.flagsMtx.Unlock()
+
+	return verAckReceived
+}
+
+// StartingHeight returns the last known height the peer reported during the
+// initial negotiation phase.
+//
+// This function is safe for concurrent access.
+func (p *Peer) StartingHeight() int32 {
+	p.statsMtx.RLock()
+	startingHeight := p.startingHeight
+	p.statsMtx.RUnlock()
+
+	return startingHeight
+}
+
+// Services returns the services flag of the remote peer.
+//
+// This function is safe for concurrent access.
+func (p *Peer) Services() wire.ServiceFlag {
+	p.flagsMtx.Lock()
+	services := p.services
+	p.flagsMtx.Unlock()
+
+	return services
+}
+
+// UserAgent returns the user agent of the remote peer.
+//
+// This function is safe for concurrent access.
+func (p *Peer) UserAgent() string {
+	p.flagsMtx.Lock()
+	userAgent := p.userAgent
+	p.flagsMtx.Unlock()
+
+	return userAgent
 }
 
 // readMessage reads the next bitcoin message from the peer with logging.
@@ -286,17 +362,6 @@ out:
 				}
 				continue
 			}
-
-			// At this point, the message was successfully sent, so
-			// update the last send time, signal the sender of the
-			// message that it has been sent (if requested), and
-			// signal the send queue to the deliver the next queued
-			// message.
-			atomic.StoreInt64(&p.lastSend, time.Now().Unix())
-			if msg.doneChan != nil {
-				msg.doneChan <- struct{}{}
-			}
-			p.sendDoneQueue <- struct{}{}
 
 		case <-p.quit:
 			break out
@@ -515,22 +580,6 @@ func (p *Peer) queueHandler() {
 		select {
 		case msg := <-p.outputQueue:
 			waiting = queuePacket(msg, pendingMsgs, waiting)
-
-		// This channel is notified when a message has been sent across
-		// the network socket.
-		case <-p.sendDoneQueue:
-			// No longer waiting if there are no more messages
-			// in the pending messages queue.
-			next := pendingMsgs.Front()
-			if next == nil {
-				waiting = false
-				continue
-			}
-
-			// Notify the outHandler about the next item to
-			// asynchronously send.
-			val := pendingMsgs.Remove(next)
-			p.sendQueue <- val.(outMsg)
 		}
 	}
 }
@@ -547,8 +596,8 @@ func NewPeerTemp(origCfg *Config) *Peer {
 		outputQueue: make(chan outMsg, outputBufferSize),
 		sendQueue:   make(chan outMsg, 1), // nonblocking sync
 
-		inQuit:          make(chan struct{}),
-		sendDoneQueue:   make(chan struct{}, 1), // nonblocking sync
+		inQuit: make(chan struct{}),
+
 		quit:            make(chan struct{}),
 		protocolVersion: cfg.ProtocolVersion,
 	}
@@ -703,6 +752,11 @@ func (p *Peer) readRemoteVersionMsg() error {
 	p.id = atomic.AddInt32(&nodeCount, 1)
 	p.userAgent = msg.UserAgent
 
+	// Determine if the peer would like to receive witness data with
+	// transactions, or not.
+	if p.services&wire.SFNodeWitness == wire.SFNodeWitness {
+		p.witnessEnabled = true
+	}
 	p.flagsMtx.Unlock()
 	return nil
 }
@@ -811,4 +865,71 @@ func (p *Peer) AssociateConnection(conn net.Conn) {
 			p.Disconnect()
 		}
 	}()
+}
+
+// newPeerBase returns a new base bitcoin peer based on the inbound flag.  This
+// is used by the NewInboundPeer and NewOutboundPeer functions to perform base
+// setup needed by both types of peers.
+func newPeerBase(origCfg *Config, inbound bool) *Peer {
+	// Default to the max supported protocol version if not specified by the
+	// caller.
+	cfg := *origCfg // Copy to avoid mutating caller.
+	if cfg.ProtocolVersion == 0 {
+		cfg.ProtocolVersion = MaxProtocolVersion
+	}
+
+	// Set the trickle interval if a non-positive value is specified.
+	if cfg.TrickleInterval <= 0 {
+		cfg.TrickleInterval = DefaultTrickleInterval
+	}
+
+	p := Peer{
+		inbound:      inbound,
+		wireEncoding: wire.BaseEncoding,
+
+		outputQueue: make(chan outMsg, outputBufferSize),
+		sendQueue:   make(chan outMsg, 1), // nonblocking sync
+
+		inQuit: make(chan struct{}),
+
+		quit:            make(chan struct{}),
+		cfg:             cfg, // Copy so caller can't mutate.
+		services:        cfg.Services,
+		protocolVersion: cfg.ProtocolVersion,
+	}
+	return &p
+}
+
+// NewInboundPeer returns a new inbound bitcoin peer. Use Start to begin
+// processing incoming and outgoing messages.
+func NewInboundPeer(cfg *Config) *Peer {
+	return newPeerBase(cfg, true)
+}
+
+// NewOutboundPeer returns a new outbound bitcoin peer.
+func NewOutboundPeer(cfg *Config, addr string) (*Peer, error) {
+	p := newPeerBase(cfg, false)
+	p.addr = addr
+
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+
+	port, err := strconv.ParseUint(portStr, 10, 16)
+	if err != nil {
+		return nil, err
+	}
+
+	p.na = wire.NewNetAddressIPPort(net.ParseIP(host), uint16(port), 0)
+
+	return p, nil
+}
+
+// WaitForDisconnect waits until the peer has completely disconnected and all
+// resources are cleaned up.  This will happen if either the local or remote
+// side has been disconnected or the peer is forcibly disconnected via
+// Disconnect.
+func (p *Peer) WaitForDisconnect() {
+	<-p.quit
 }
