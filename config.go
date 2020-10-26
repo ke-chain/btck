@@ -18,15 +18,15 @@ import (
 )
 
 const (
-	defaultConfigFilename = "btcd.conf"
+	defaultConfigFilename = "btck.conf"
 	defaultLogDirname     = "logs"
-	defaultLogFilename    = "btcd.log"
+	defaultLogFilename    = "btck.log"
 	defaultConnectTimeout = time.Second * 30
-	sampleConfigFilename  = "sample-btcd.conf"
+	sampleConfigFilename  = "sample-btck.conf"
 )
 
 var (
-	defaultHomeDir    = btcutil.AppDataDir("btcd", false)
+	defaultHomeDir    = btcutil.AppDataDir("btck", false)
 	defaultConfigFile = filepath.Join(defaultHomeDir, defaultConfigFilename)
 	defaultLogDir     = filepath.Join(defaultHomeDir, defaultLogDirname)
 	defaultMaxPeers   = 125
@@ -62,7 +62,7 @@ func newConfigParser(cfg *config, so *serviceOptions, options flags.Options) *fl
 	return parser
 }
 
-// createDefaultConfig copies the file sample-btcd.conf to the given destination path,
+// createDefaultConfig copies the file sample-btck.conf to the given destination path,
 // and populates it with some randomly generated RPC username and password.
 func createDefaultConfigFile(destinationPath string) error {
 	// Create the destination directory if it does not exists

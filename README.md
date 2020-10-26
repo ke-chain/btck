@@ -5,4 +5,4 @@
 
 1. 安装[BTCD](https://github.com/btcsuite/btcd)
 2. btcd --configfile ./btcd.conf
-3. go run /.
+3. go run ./ --configfile ./configke.conf
