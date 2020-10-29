@@ -1,6 +1,4 @@
-图说比特币 Part 2:心跳信息
-======
-
+图说比特币 Part 4:如何存储BlockHeaders？
 ## 测试
 
 1. cd ./blockchain
