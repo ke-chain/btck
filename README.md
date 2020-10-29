@@ -1,8 +1,7 @@
 图说比特币 Part 2:心跳信息
 ======
 
-## 启动
+## 测试
 
-1. 安装[BTCD](https://github.com/btcsuite/btcd)
-2. btcd --configfile ./btcd.conf
-3. go run ./ --configfile ./configke.conf
+1. cd ./blockchain
+2. go test .
