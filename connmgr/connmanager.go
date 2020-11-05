@@ -480,3 +480,22 @@ func (cm *ConnManager) Start() {
 		go cm.NewConnReq()
 	}
 }
+
+// Stop gracefully shuts down the connection manager.
+func (cm *ConnManager) Stop() {
+	if atomic.AddInt32(&cm.stop, 1) != 1 {
+		log.Warnf("Connection manager already stopped")
+		return
+	}
+
+	// Stop all the listeners.  There will not be any listeners if
+	// listening is disabled.
+	for _, listener := range cm.cfg.Listeners {
+		// Ignore the error since this is shutdown and there is no way
+		// to recover anyways.
+		_ = listener.Close()
+	}
+
+	close(cm.quit)
+	log.Trace("Connection manager stopped")
+}

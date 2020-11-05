@@ -77,6 +77,22 @@ var (
 	KEYChainTip = []byte("ChainTip")
 )
 
+// GetHeight return  height of StoredHeader
+func (h *StoredHeader) GetHeight() int32 {
+	return int32(h.height)
+}
+
+// GetHeight return  height of StoredHeader
+func (h *StoredHeader) GetHeader() *wire.BlockHeader {
+	return &h.header
+}
+
+// BlockHash computes the block identifier hash for the given block header.
+func (h *StoredHeader) BlockHash() *chainhash.Hash {
+	hash := h.header.BlockHash()
+	return &hash
+}
+
 func NewHeaderDB(filePath string) (*HeaderDB, error) {
 	if !strings.Contains(filePath, ".bin") {
 		filePath = path.Join(filePath, "headers.bin")

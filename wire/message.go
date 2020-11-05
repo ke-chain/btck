@@ -100,13 +100,39 @@ func makeEmptyMessage(command string) (Message, error) {
 	switch command {
 	case CmdVersion:
 		msg = &MsgVersion{}
+
 	case CmdVerAck:
 		msg = &MsgVerAck{}
+
+	case CmdGetBlocks:
+		msg = &MsgGetBlocks{}
+
+	case CmdBlock:
+		msg = &MsgBlock{}
+
+	case CmdInv:
+		msg = &MsgInv{}
+
+	case CmdGetData:
+		msg = &MsgGetData{}
+
+	case CmdTx:
+		msg = &MsgTx{}
+
 	case CmdPing:
 		msg = &MsgPing{}
 
 	case CmdPong:
 		msg = &MsgPong{}
+
+	case CmdGetHeaders:
+		msg = &MsgGetHeaders{}
+
+	case CmdHeaders:
+		msg = &MsgHeaders{}
+
+	case CmdMerkleBlock:
+		msg = &MsgMerkleBlock{}
 
 	default:
 		return nil, fmt.Errorf("unhandled command [%s]", command)

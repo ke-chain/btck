@@ -113,6 +113,14 @@ func (b *ChainSPV) GetEpoch() (*wire.BlockHeader, error) {
 	return &sh.header, nil
 }
 
+func (b *ChainSPV) GetHeader(hash *chainhash.Hash) (StoredHeader, error) {
+	sh, err := b.db.GetHeader(*hash)
+	if err != nil {
+		return sh, err
+	}
+	return sh, nil
+}
+
 // Get the PoW target this block should meet. We may need to handle a difficulty adjustment
 // or testnet difficulty rules.
 func (b *ChainSPV) calcRequiredWork(header wire.BlockHeader, height int32, prevHeader StoredHeader) (uint32, error) {
@@ -420,4 +428,12 @@ func (b *ChainSPV) Rollback(t time.Time) error {
 		return err
 	}
 	return b.db.Put(sh, true)
+}
+
+func (b *ChainSPV) BestBlock() (StoredHeader, error) {
+	sh, err := b.db.GetBestHeader()
+	if err != nil {
+		return StoredHeader{}, err
+	}
+	return sh, nil
 }

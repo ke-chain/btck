@@ -649,3 +649,35 @@ func VarIntSerializeSize(val uint64) int {
 	// Discriminant 1 byte plus 8 bytes for the uint64.
 	return 9
 }
+
+// ReadVarBytes reads a variable length byte array.  A byte array is encoded
+// as a varInt containing the length of the array followed by the bytes
+// themselves.  An error is returned if the length is greater than the
+// passed maxAllowed parameter which helps protect against memory exhaustion
+// attacks and forced panics through malformed messages.  The fieldName
+// parameter is only used for the error message so it provides more context in
+// the error.
+func ReadVarBytes(r io.Reader, pver uint32, maxAllowed uint32,
+	fieldName string) ([]byte, error) {
+
+	count, err := ReadVarInt(r, pver)
+	if err != nil {
+		return nil, err
+	}
+
+	// Prevent byte array larger than the max message size.  It would
+	// be possible to cause memory exhaustion and panics without a sane
+	// upper bound on this count.
+	if count > uint64(maxAllowed) {
+		str := fmt.Sprintf("%s is larger than the max allowed size "+
+			"[count %d, max %d]", fieldName, count, maxAllowed)
+		return nil, messageError("ReadVarBytes", str)
+	}
+
+	b := make([]byte, count)
+	_, err = io.ReadFull(r, b)
+	if err != nil {
+		return nil, err
+	}
+	return b, nil
+}

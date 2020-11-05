@@ -12,6 +12,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/decred/dcrd/lru"
+	"github.com/ke-chain/btck/blockchain"
+	"github.com/ke-chain/btck/chaincfg/chainhash"
 	"github.com/ke-chain/btck/wire"
 
 	"github.com/davecgh/go-spew/spew"
@@ -34,7 +37,7 @@ const (
 
 	// pingInterval is the interval of time to wait in between sending ping
 	// messages.
-	pingInterval = 2 * time.Second
+	pingInterval = 2 * time.Minute
 
 	// negotiateTimeout is the duration of inactivity before we timeout a
 	// peer that hasn't completed the initial version negotiation.
@@ -101,20 +104,30 @@ type Peer struct {
 
 	wireEncoding wire.MessageEncoding
 
+	knownInventory     lru.Cache
+	prevGetBlocksMtx   sync.Mutex
+	prevGetBlocksBegin *chainhash.Hash
+	prevGetBlocksStop  *chainhash.Hash
+	prevGetHdrsMtx     sync.Mutex
+	prevGetHdrsBegin   *chainhash.Hash
+	prevGetHdrsStop    *chainhash.Hash
+
 	// These fields keep track of statistics for the peer and are protected
 	// by the statsMtx mutex.
-	statsMtx       sync.RWMutex
-	timeConnected  time.Time
-	startingHeight int32
-	lastBlock      int32
-	lastPingNonce  uint64    // Set to nonce if we have a pending ping.
-	lastPingTime   time.Time // Time we sent last ping.
-	lastPingMicros int64     // Time for last ping to return.
+	statsMtx           sync.RWMutex
+	timeConnected      time.Time
+	startingHeight     int32
+	lastBlock          int32
+	lastAnnouncedBlock *chainhash.Hash
+	lastPingNonce      uint64    // Set to nonce if we have a pending ping.
+	lastPingTime       time.Time // Time we sent last ping.
+	lastPingMicros     int64     // Time for last ping to return.
 
-	outputQueue chan outMsg
-	sendQueue   chan outMsg
-	inQuit      chan struct{}
-	quit        chan struct{}
+	outputQueue   chan outMsg
+	sendQueue     chan outMsg
+	sendDoneQueue chan struct{}
+	inQuit        chan struct{}
+	quit          chan struct{}
 }
 
 // Config is the struct to hold configuration options useful to Peer.
@@ -151,6 +164,30 @@ type Config struct {
 	// TrickleInterval is the duration of the ticker which trickles down the
 	// inventory to a peer.
 	TrickleInterval time.Duration
+
+	// Listeners houses callback functions to be invoked on receiving peer
+	// messages.
+	Listeners MessageListeners
+}
+
+// MessageListeners defines callback function pointers to invoke with message
+// listeners for a peer. Any listener which is not set to a concrete callback
+// during peer initialization is ignored. Execution of multiple message
+// listeners occurs serially, so one callback blocks the execution of the next.
+//
+// NOTE: Unless otherwise documented, these listeners must NOT directly call any
+// blocking calls (such as WaitForShutdown) on the peer instance since the input
+// handler goroutine blocks until the callback has completed.  Doing so will
+// result in a deadlock.
+type MessageListeners struct {
+	// OnInv is invoked when a peer receives an inv bitcoin message.
+	OnInv func(p *Peer, msg *wire.MsgInv)
+
+	// OnVerAck is invoked when a peer receives a verack bitcoin message.
+	OnVerAck func(p *Peer, msg *wire.MsgVerAck)
+
+	// OnHeaders is invoked when a peer receives a headers bitcoin message.
+	OnHeaders func(p *Peer, msg *wire.MsgHeaders)
 }
 
 // outMsg is used to house a message to be sent along with a channel to signal
@@ -229,6 +266,37 @@ func (p *Peer) Services() wire.ServiceFlag {
 	p.flagsMtx.Unlock()
 
 	return services
+}
+
+// UpdateLastBlockHeight updates the last known block for the peer.
+//
+// This function is safe for concurrent access.
+func (p *Peer) UpdateLastBlockHeight(newHeight int32) {
+	p.statsMtx.Lock()
+	log.Tracef("Updating last block height of peer %v from %v to %v",
+		p.addr, p.lastBlock, newHeight)
+	p.lastBlock = newHeight
+	p.statsMtx.Unlock()
+}
+
+// UpdateLastAnnouncedBlock updates meta-data about the last block hash this
+// peer is known to have announced.
+//
+// This function is safe for concurrent access.
+func (p *Peer) UpdateLastAnnouncedBlock(blkHash *chainhash.Hash) {
+	log.Tracef("Updating last blk for peer %v, %v", p.addr, blkHash)
+
+	p.statsMtx.Lock()
+	p.lastAnnouncedBlock = blkHash
+	p.statsMtx.Unlock()
+}
+
+// AddKnownInventory adds the passed inventory to the cache of known inventory
+// for the peer.
+//
+// This function is safe for concurrent access.
+func (p *Peer) AddKnownInventory(invVect *wire.InvVect) {
+	p.knownInventory.Add(invVect)
 }
 
 // UserAgent returns the user agent of the remote peer.
@@ -363,6 +431,17 @@ out:
 				continue
 			}
 
+			// At this point, the message was successfully sent, so
+			// update the last send time, signal the sender of the
+			// message that it has been sent (if requested), and
+			// signal the send queue to the deliver the next queued
+			// message.
+			atomic.StoreInt64(&p.lastSend, time.Now().Unix())
+			if msg.doneChan != nil {
+				msg.doneChan <- struct{}{}
+			}
+			p.sendDoneQueue <- struct{}{}
+
 		case <-p.quit:
 			break out
 		}
@@ -391,6 +470,13 @@ cleanup:
 //
 // This function is safe for concurrent access.
 func (p *Peer) QueueMessage(msg wire.Message, doneChan chan<- struct{}) {
+	p.QueueMessageWithEncoding(msg, doneChan, wire.BaseEncoding)
+}
+
+// QueueMessage adds the passed bitcoin message to the peer send queue.
+//
+// This function is safe for concurrent access.
+func (p *Peer) QueuebtcdMessage(msg wire.Message, doneChan chan<- struct{}) {
 	p.QueueMessageWithEncoding(msg, doneChan, wire.BaseEncoding)
 }
 
@@ -423,6 +509,95 @@ func (p *Peer) QueueMessageWithEncoding(msg wire.Message, doneChan chan<- struct
 		return
 	}
 	p.outputQueue <- outMsg{msg: msg, encoding: encoding, doneChan: doneChan}
+}
+
+// PushGetBlocksMsg sends a getblocks message for the provided block locator
+// and stop hash.  It will ignore back-to-back duplicate requests.
+//
+// This function is safe for concurrent access.
+func (p *Peer) PushGetBlocksMsg(locator blockchain.BlockLocator, stopHash *chainhash.Hash) error {
+	// Extract the begin hash from the block locator, if one was specified,
+	// to use for filtering duplicate getblocks requests.
+	var beginHash *chainhash.Hash
+	if len(locator) > 0 {
+		beginHash = locator[0]
+	}
+
+	// Filter duplicate getblocks requests.
+	p.prevGetBlocksMtx.Lock()
+	isDuplicate := p.prevGetBlocksStop != nil && p.prevGetBlocksBegin != nil &&
+		beginHash != nil && stopHash.IsEqual(p.prevGetBlocksStop) &&
+		beginHash.IsEqual(p.prevGetBlocksBegin)
+	p.prevGetBlocksMtx.Unlock()
+
+	if isDuplicate {
+		log.Tracef("Filtering duplicate [getblocks] with begin "+
+			"hash %v, stop hash %v", beginHash, stopHash)
+		return nil
+	}
+
+	// Construct the getblocks request and queue it to be sent.
+	msg := wire.NewMsgGetBlocks(stopHash)
+	for _, hash := range locator {
+		err := msg.AddBlockLocatorHash(hash)
+		if err != nil {
+			return err
+		}
+	}
+	p.QueueMessage(msg, nil)
+
+	// Update the previous getblocks request information for filtering
+	// duplicates.
+	p.prevGetBlocksMtx.Lock()
+	p.prevGetBlocksBegin = beginHash
+	p.prevGetBlocksStop = stopHash
+	p.prevGetBlocksMtx.Unlock()
+	return nil
+}
+
+// PushGetHeadersMsg sends a getblocks message for the provided block locator
+// and stop hash.  It will ignore back-to-back duplicate requests.
+//
+// This function is safe for concurrent access.
+func (p *Peer) PushGetHeadersMsg(locator blockchain.BlockLocator, stopHash *chainhash.Hash) error {
+	// Extract the begin hash from the block locator, if one was specified,
+	// to use for filtering duplicate getheaders requests.
+	var beginHash *chainhash.Hash
+	if len(locator) > 0 {
+		beginHash = locator[0]
+	}
+
+	// Filter duplicate getheaders requests.
+	p.prevGetHdrsMtx.Lock()
+	isDuplicate := p.prevGetHdrsStop != nil && p.prevGetHdrsBegin != nil &&
+		beginHash != nil && stopHash.IsEqual(p.prevGetHdrsStop) &&
+		beginHash.IsEqual(p.prevGetHdrsBegin)
+	p.prevGetHdrsMtx.Unlock()
+
+	if isDuplicate {
+		log.Tracef("Filtering duplicate [getheaders] with begin hash %v",
+			beginHash)
+		return nil
+	}
+
+	// Construct the getheaders request and queue it to be sent.
+	msg := wire.NewMsgGetHeaders()
+	msg.HashStop = *stopHash
+	for _, hash := range locator {
+		err := msg.AddBlockLocatorHash(hash)
+		if err != nil {
+			return err
+		}
+	}
+	p.QueueMessage(msg, nil)
+
+	// Update the previous getheaders request information for filtering
+	// duplicates.
+	p.prevGetHdrsMtx.Lock()
+	p.prevGetHdrsBegin = beginHash
+	p.prevGetHdrsStop = stopHash
+	p.prevGetHdrsMtx.Unlock()
+	return nil
 }
 
 // handlePingMsg is invoked when a peer receives a ping bitcoin message.  For
@@ -530,6 +705,16 @@ out:
 		case *wire.MsgPong:
 			p.handlePongMsg(msg)
 
+		case *wire.MsgInv:
+			if p.cfg.Listeners.OnInv != nil {
+				p.cfg.Listeners.OnInv(p, msg)
+			}
+
+		case *wire.MsgHeaders:
+			if p.cfg.Listeners.OnHeaders != nil {
+				p.cfg.Listeners.OnHeaders(p, msg)
+			}
+
 		default:
 			log.Debugf("Received unhandled message of type %v "+
 				"from %v", rmsg.Command(), p)
@@ -580,46 +765,25 @@ func (p *Peer) queueHandler() {
 		select {
 		case msg := <-p.outputQueue:
 			waiting = queuePacket(msg, pendingMsgs, waiting)
+
+			// This channel is notified when a message has been sent across
+			// the network socket.
+		case <-p.sendDoneQueue:
+			// No longer waiting if there are no more messages
+			// in the pending messages queue.
+			next := pendingMsgs.Front()
+			if next == nil {
+				waiting = false
+				continue
+			}
+
+			// Notify the outHandler about the next item to
+			// asynchronously send.
+			val := pendingMsgs.Remove(next)
+			p.sendQueue <- val.(outMsg)
+
 		}
 	}
-}
-
-func NewPeerTemp(origCfg *Config) *Peer {
-
-	cfg := *origCfg // Copy to avoid mutating caller.
-	if cfg.ProtocolVersion == 0 {
-		cfg.ProtocolVersion = MaxProtocolVersion
-	}
-	return &Peer{
-		wireEncoding: wire.BaseEncoding,
-
-		outputQueue: make(chan outMsg, outputBufferSize),
-		sendQueue:   make(chan outMsg, 1), // nonblocking sync
-
-		inQuit: make(chan struct{}),
-
-		quit:            make(chan struct{}),
-		protocolVersion: cfg.ProtocolVersion,
-	}
-}
-
-// NewOutboundPeerTemp returns a new outbound bitcoin peer.
-func NewOutboundPeerTemp(origCfg *Config, addr string) (*Peer, error) {
-	p := NewPeerTemp(origCfg)
-	p.addr = addr
-	host, portStr, err := net.SplitHostPort(addr)
-	if err != nil {
-		return nil, err
-	}
-
-	port, err := strconv.ParseUint(portStr, 10, 16)
-	if err != nil {
-		return nil, err
-	}
-
-	p.na = wire.NewNetAddressIPPort(net.ParseIP(host), uint16(port), 0)
-	return p, nil
-
 }
 
 // Disconnect disconnects the peer by closing the connection.  Calling this
@@ -705,7 +869,7 @@ func (p *Peer) readRemoteVerAckMsg() error {
 
 	// It should be a verack message, otherwise send a reject message to the
 	// peer explaining why.
-	_, ok := remoteMsg.(*wire.MsgVerAck)
+	msg, ok := remoteMsg.(*wire.MsgVerAck)
 	if !ok {
 		reason := "a verack message must follow version"
 		return errors.New(reason)
@@ -714,6 +878,10 @@ func (p *Peer) readRemoteVerAckMsg() error {
 	p.flagsMtx.Lock()
 	p.verAckReceived = true
 	p.flagsMtx.Unlock()
+
+	if p.cfg.Listeners.OnVerAck != nil {
+		p.cfg.Listeners.OnVerAck(p, msg)
+	}
 
 	return nil
 }
@@ -745,6 +913,13 @@ func (p *Peer) readRemoteVersionMsg() error {
 	p.flagsMtx.Unlock()
 	log.Debugf("Negotiated protocol version %d for peer %s",
 		p.protocolVersion, p)
+
+	// Updating a bunch of stats including block based stats, and the
+	// peer's time offset.
+	p.statsMtx.Lock()
+	p.lastBlock = msg.LastBlock
+	p.startingHeight = msg.LastBlock
+	p.statsMtx.Unlock()
 
 	// Set the peer's ID, user agent, and potentially the flag which
 	// specifies the witness support is enabled.
@@ -887,10 +1062,10 @@ func newPeerBase(origCfg *Config, inbound bool) *Peer {
 		inbound:      inbound,
 		wireEncoding: wire.BaseEncoding,
 
-		outputQueue: make(chan outMsg, outputBufferSize),
-		sendQueue:   make(chan outMsg, 1), // nonblocking sync
-
-		inQuit: make(chan struct{}),
+		outputQueue:   make(chan outMsg, outputBufferSize),
+		sendQueue:     make(chan outMsg, 1),   // nonblocking sync
+		sendDoneQueue: make(chan struct{}, 1), // nonblocking sync
+		inQuit:        make(chan struct{}),
 
 		quit:            make(chan struct{}),
 		cfg:             cfg, // Copy so caller can't mutate.

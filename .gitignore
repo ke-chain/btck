@@ -1,3 +1,12 @@
 .vscode/launch.json
 btck
 go.sum
+btcd/data/simnet/blocks_ffldb/000000000.fdb
+btcd/data/simnet/blocks_ffldb/metadata/000002.log
+btcd/data/simnet/blocks_ffldb/metadata/000003.ldb
+btcd/data/simnet/blocks_ffldb/metadata/000004.ldb
+btcd/data/simnet/blocks_ffldb/metadata/CURRENT
+btcd/data/simnet/blocks_ffldb/metadata/LOCK
+btcd/data/simnet/blocks_ffldb/metadata/LOG
+btcd/data/simnet/blocks_ffldb/metadata/MANIFEST-000000
+btcd/data/simnet/peers.json

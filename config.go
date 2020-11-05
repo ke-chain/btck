@@ -19,6 +19,7 @@ import (
 
 const (
 	defaultConfigFilename = "btck.conf"
+	defaultDataDirname    = "data"
 	defaultLogDirname     = "logs"
 	defaultLogFilename    = "btck.log"
 	defaultConnectTimeout = time.Second * 30
@@ -28,17 +29,24 @@ const (
 var (
 	defaultHomeDir    = btcutil.AppDataDir("btck", false)
 	defaultConfigFile = filepath.Join(defaultHomeDir, defaultConfigFilename)
+	defaultDataDir    = filepath.Join(defaultHomeDir, defaultDataDirname)
 	defaultLogDir     = filepath.Join(defaultHomeDir, defaultLogDirname)
 	defaultMaxPeers   = 125
 )
 
 type config struct {
 	AddPeers          []string `short:"a" long:"addpeer" description:"Add a peer to connect with at startup"`
+	BlocksOnly        bool     `long:"blocksonly" description:"Do not accept transactions from remote peers."`
 	ConnectPeers      []string `long:"connect" description:"Connect only to the specified peers at startup"`
 	ConfigFile        string   `short:"C" long:"configfile" description:"Path to configuration file"`
+	DataDir           string   `short:"b" long:"datadir" description:"Directory to store data"`
+	DisableDNSSeed    bool     `long:"nodnsseed" description:"Disable DNS seeding for peers"`
 	LogDir            string   `long:"logdir" description:"Directory to log output."`
 	MaxPeers          int      `long:"maxpeers" description:"Max number of inbound and outbound peers"`
 	NoOnion           bool     `long:"noonion" description:"Disable connecting to tor hidden services"`
+	RegressionTest    bool     `long:"regtest" description:"Use the regression test network"`
+	SimNet            bool     `long:"simnet" description:"Use the simulation test network"`
+	TestNet3          bool     `long:"testnet" description:"Use the test network"`
 	UserAgentComments []string `long:"uacomment" description:"Comment to add to the user agent -- See BIP 14 for more information."`
 
 	lookup     func(string) ([]net.IP, error)
@@ -144,8 +152,12 @@ func createDefaultConfigFile(destinationPath string) error {
 func loadConfig() (*config, []string, error) {
 	// Default config.
 	cfg := config{
-		LogDir:   defaultLogDir,
+		ConfigFile: defaultConfigFile,
+
 		MaxPeers: defaultMaxPeers,
+
+		DataDir: defaultDataDir,
+		LogDir:  defaultLogDir,
 	}
 
 	// Service options which are only added on Windows.
@@ -183,6 +195,7 @@ func loadConfig() (*config, []string, error) {
 			}
 		}
 
+		fmt.Printf("preCfg.ConfigFile: %s", preCfg.ConfigFile)
 		err := flags.NewIniParser(parser).ParseFile(preCfg.ConfigFile)
 		if err != nil {
 			if _, ok := err.(*os.PathError); !ok {
@@ -194,6 +207,33 @@ func loadConfig() (*config, []string, error) {
 			configFileError = err
 		}
 	}
+
+	// Multiple networks can't be selected simultaneously.
+	numNets := 0
+	// Count number of network flags passed; assign active network params
+	// while we're at it
+	if cfg.TestNet3 {
+		numNets++
+		activeNetParams = &testNet3Params
+	}
+	if cfg.RegressionTest {
+		numNets++
+		activeNetParams = &regressionNetParams
+	}
+	if cfg.SimNet {
+		numNets++
+		// Also disable dns seeding on the simulation test network.
+		activeNetParams = &simNetParams
+		cfg.DisableDNSSeed = true
+	}
+
+	cfg.DataDir = filepath.Join(cfg.DataDir, netName(activeNetParams))
+
+	// Connect means no DNS seeding.
+	if len(cfg.ConnectPeers) > 0 {
+		cfg.DisableDNSSeed = true
+	}
+
 	// Initialize log rotation.  After log rotation has been initialized, the
 	// logger variables may be used.
 	initLogRotator(filepath.Join(cfg.LogDir, defaultLogFilename))

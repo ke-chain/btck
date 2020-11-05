@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ke-chain/btck/blockchain"
 	"github.com/ke-chain/btck/peer"
 	"github.com/ke-chain/btck/wire"
 
@@ -39,10 +40,68 @@ var (
 	userAgentVersion = fmt.Sprintf("%d.%d.%d", appMajor, appMinor, appPatch)
 )
 
+// AddPeer adds a new peer that has already been connected to the server.
+func (s *server) AddPeer(sp *serverPeer) {
+	s.newPeers <- sp
+}
+
+// OnVerAck is invoked when a peer receives a verack bitcoin message and is used
+// to kick start communication with them.
+func (sp *serverPeer) OnVerAck(_ *peer.Peer, _ *wire.MsgVerAck) {
+	sp.server.AddPeer(sp)
+}
+
+// OnInv is invoked when a peer receives an inv bitcoin message and is
+// used to examine the inventory being advertised by the remote peer and react
+// accordingly.  We pass the message down to blockmanager which will call
+// QueueMessage with any appropriate responses.
+func (sp *serverPeer) OnInv(_ *peer.Peer, msg *wire.MsgInv) {
+	if !cfg.BlocksOnly {
+		if len(msg.InvList) > 0 {
+			sp.server.syncManager.QueueInv(msg, sp.Peer)
+		}
+		return
+	}
+
+	newInv := wire.NewMsgInvSizeHint(uint(len(msg.InvList)))
+	for _, invVect := range msg.InvList {
+		if invVect.Type == wire.InvTypeTx {
+			peerLog.Tracef("Ignoring tx %v in inv from %v -- "+
+				"blocksonly enabled", invVect.Hash, sp)
+			if sp.ProtocolVersion() >= wire.BIP0037Version {
+				peerLog.Infof("Peer %v is announcing "+
+					"transactions -- disconnecting", sp)
+				sp.Disconnect()
+				return
+			}
+			continue
+		}
+		err := newInv.AddInvVect(invVect)
+		if err != nil {
+			peerLog.Errorf("Failed to add inventory vector: %v", err)
+			break
+		}
+	}
+
+	if len(newInv.InvList) > 0 {
+		sp.server.syncManager.QueueInv(newInv, sp.Peer)
+	}
+}
+
+// OnHeaders is invoked when a peer receives a headers bitcoin
+// message.  The message is passed down to the sync manager.
+func (sp *serverPeer) OnHeaders(_ *peer.Peer, msg *wire.MsgHeaders) {
+	sp.server.syncManager.QueueHeaders(msg, sp.Peer)
+}
+
 // newPeerConfig returns the configuration for the given serverPeer.
 func newPeerConfig(sp *serverPeer) *peer.Config {
 	return &peer.Config{
-
+		Listeners: peer.MessageListeners{
+			OnInv:     sp.OnInv,
+			OnVerAck:  sp.OnVerAck,
+			OnHeaders: sp.OnHeaders,
+		},
 		UserAgentName:     userAgentName,
 		UserAgentVersion:  userAgentVersion,
 		UserAgentComments: cfg.UserAgentComments,
@@ -64,7 +123,9 @@ type server struct {
 
 	chainParams *chaincfg.Params
 	connManager *connmgr.ConnManager
+	chain       *blockchain.ChainSPV
 	donePeers   chan *serverPeer
+	newPeers    chan *serverPeer
 	syncManager *netsync.SyncManager
 	wg          sync.WaitGroup
 	quit        chan struct{}
@@ -87,6 +148,16 @@ type onionAddr struct {
 	addr string
 }
 
+// peerState maintains state of inbound, persistent, outbound peers as well
+// as banned peers and outbound groups.
+type peerState struct {
+	inboundPeers    map[int32]*serverPeer
+	outboundPeers   map[int32]*serverPeer
+	persistentPeers map[int32]*serverPeer
+	banned          map[string]time.Time
+	outboundGroups  map[string]int
+}
+
 // String returns the onion address.
 //
 // This is part of the net.Addr interface.
@@ -101,6 +172,36 @@ func (oa *onionAddr) Network() string {
 	return "onion"
 }
 
+// handleAddPeerMsg deals with adding new peers.  It is invoked from the
+// peerHandler goroutine.
+func (s *server) handleAddPeerMsg(state *peerState, sp *serverPeer) bool {
+
+	// Signal the sync manager this peer is a new sync candidate.
+	s.syncManager.NewPeer(sp.Peer)
+	return true
+
+}
+
+// forAllOutboundPeers is a helper function that runs closure on all outbound
+// peers known to peerState.
+func (ps *peerState) forAllOutboundPeers(closure func(sp *serverPeer)) {
+	for _, e := range ps.outboundPeers {
+		closure(e)
+	}
+	for _, e := range ps.persistentPeers {
+		closure(e)
+	}
+}
+
+// forAllPeers is a helper function that runs closure on all peers known to
+// peerState.
+func (ps *peerState) forAllPeers(closure func(sp *serverPeer)) {
+	for _, e := range ps.inboundPeers {
+		closure(e)
+	}
+	ps.forAllOutboundPeers(closure)
+}
+
 // peerHandler is used to handle peer operations such as adding and removing
 // peers to and from the server, banning peers, and broadcasting messages to
 // peers.  It must be run in a goroutine.
@@ -113,6 +214,48 @@ func (s *server) peerHandler() {
 	s.syncManager.Start()
 
 	go s.connManager.Start()
+
+	state := &peerState{
+		inboundPeers:    make(map[int32]*serverPeer),
+		persistentPeers: make(map[int32]*serverPeer),
+		outboundPeers:   make(map[int32]*serverPeer),
+		banned:          make(map[string]time.Time),
+		outboundGroups:  make(map[string]int),
+	}
+
+out:
+	for {
+		select {
+		// New peers connected to the server.
+		case p := <-s.newPeers:
+			s.handleAddPeerMsg(state, p)
+
+		case <-s.quit:
+			// Disconnect all peers on server shutdown.
+			state.forAllPeers(func(sp *serverPeer) {
+				srvrLog.Tracef("Shutdown peer %s", sp)
+				sp.Disconnect()
+			})
+			break out
+		}
+	}
+
+	s.connManager.Stop()
+	s.syncManager.Stop()
+
+	// Drain channels before exiting so nothing is left waiting around
+	// to send.
+cleanup:
+	for {
+		select {
+		case <-s.newPeers:
+		case <-s.donePeers:
+		default:
+			break cleanup
+		}
+	}
+	s.wg.Done()
+	srvrLog.Tracef("Peer handler done")
 }
 
 // addrStringToNetAddr takes an address in the form of 'host:port' and returns
@@ -179,9 +322,18 @@ func (s *server) inboundPeerConnected(conn net.Conn) {
 // bitcoin network type specified by chainParams.  Use start to begin accepting
 // connections from peers.
 func newServer() (*server, error) {
-	s := server{}
+	s := server{
+		newPeers: make(chan *serverPeer, cfg.MaxPeers),
+	}
+	// Create a new block chain instance with the appropriate configuration.
 	var err error
+	s.chain, err = blockchain.NewBlockchainSPV(cfg.DataDir, time.Now(), activeNetParams.Params)
+	if err != nil {
+		return nil, err
+	}
+
 	s.syncManager, err = netsync.New(&netsync.Config{
+		Chain:       s.chain,
 		ChainParams: s.chainParams,
 		MaxPeers:    cfg.MaxPeers,
 	})

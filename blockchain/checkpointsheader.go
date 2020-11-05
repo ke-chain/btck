@@ -142,6 +142,9 @@ func GetCheckpoint(walletCreationDate time.Time, params *chaincfg.Params) Checkp
 			}
 		}
 		return testnet3Checkpoints[0]
+	case chaincfg.SimNetParams.Name:
+		return CheckpointHeader{0, chaincfg.SimNetParams.GenesisBlock.Header}
+
 	default:
 		return regtestCheckpoint
 	}
