@@ -10,4 +10,5 @@ type Config struct {
 	ChainParams *chaincfg.Params
 	Chain       *blockchain.ChainSPV
 	MaxPeers    int
+	TxStore     *blockchain.TxStore
 }

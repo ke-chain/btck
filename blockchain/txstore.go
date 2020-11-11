@@ -4,11 +4,11 @@ import (
 	"sync"
 
 	"github.com/OpenBazaar/wallet-interface"
-	btcdcfg "github.com/btcsuite/btcd/chaincfg"
 	btcdwire "github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
 	"github.com/btcsuite/btcutil/bloom"
 	"github.com/ke-chain/btck/chaincfg"
+	"github.com/ke-chain/btck/txscript"
 )
 
 type TxStore struct {
@@ -28,19 +28,13 @@ type TxStore struct {
 	wallet.Datastore
 }
 
-func (ts *TxStore) getbtcdParams() *btcdcfg.Params {
-	return &btcdcfg.Params{
-		PubKeyHashAddrID: ts.params.PubKeyHashAddrID,
-	}
-}
-
 // PopulateAdrs just puts a bunch of adrs in ram; it doesn't touch the DB
 func (ts *TxStore) PopulateAdrs() error {
 	keys := ts.keyManager.GetKeys()
 	ts.addrMutex.Lock()
 	ts.adrs = []btcutil.Address{}
 	for _, k := range keys {
-		addr, err := k.Address(ts.getbtcdParams())
+		addr, err := k.Address(chaincfg.GetbtcdPm(ts.params))
 		if err != nil {
 			continue
 		}
@@ -89,6 +83,13 @@ func (ts *TxStore) GimmeFilter() (*bloom.Filter, error) {
 
 	for _, s := range allStxos {
 		f.AddOutPoint(&s.Utxo.Op)
+	}
+	for _, w := range ts.watchedScripts {
+		_, addrs, _, err := txscript.ExtractPkScriptAddrs(w, ts.params)
+		if err != nil {
+			continue
+		}
+		f.Add(addrs[0].ScriptAddress())
 	}
 
 	return f, nil

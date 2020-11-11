@@ -804,6 +804,7 @@ func New(config *Config) (*SyncManager, error) {
 		msgChan:         make(chan interface{}, config.MaxPeers*3),
 		headerList:      list.New(),
 		quit:            make(chan struct{}),
+		txStore:         config.TxStore,
 	}
 
 	return &sm, nil

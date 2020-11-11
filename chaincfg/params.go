@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	btcdcfg "github.com/btcsuite/btcd/chaincfg"
 	"github.com/ke-chain/btck/chaincfg/chainhash"
 	"github.com/ke-chain/btck/wire"
 )
@@ -709,4 +710,18 @@ func init() {
 	mustRegister(&TestNet3Params)
 	mustRegister(&RegressionNetParams)
 	mustRegister(&SimNetParams)
+}
+
+func GetbtcdPm(p *Params) *btcdcfg.Params {
+	return &btcdcfg.Params{
+
+		PubKeyHashAddrID:        p.PubKeyHashAddrID,
+		ScriptHashAddrID:        p.ScriptHashAddrID,
+		PrivateKeyID:            p.PrivateKeyID,
+		WitnessPubKeyHashAddrID: p.WitnessPubKeyHashAddrID,
+		WitnessScriptHashAddrID: p.WitnessScriptHashAddrID,
+
+		HDPrivateKeyID: p.HDPrivateKeyID,
+		HDPublicKeyID:  p.HDPublicKeyID,
+	}
 }

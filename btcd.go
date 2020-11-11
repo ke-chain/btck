@@ -1,13 +1,18 @@
 package main
 
 import (
+	"fmt"
 	"os"
+	"os/signal"
 	"runtime"
 	"runtime/debug"
+
+	"github.com/jessevdk/go-flags"
 )
 
 var (
-	cfg *config
+	cfg    *Config
+	parser = flags.NewParser(nil, flags.Default)
 )
 
 // btcdMain is the real main function for btcd.  It is necessary to work around
@@ -68,8 +73,44 @@ func main() {
 	// usage.
 	debug.SetGCPercent(10)
 
-	// Work around defer not working after os.Exit()
-	if err := btcdMain(); err != nil {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt)
+	go func() {
+		for range c {
+			fmt.Println("SPVWallet shutting down...")
+			os.Exit(1)
+		}
+	}()
+
+	parser.AddCommand("newaddress",
+		"get a new bitcoin address",
+		"Returns a new unused address in the keychain. Use caution when using this function as generating too many new addresses may cause the keychain to extend further than the wallet's lookahead window, meaning it might fail to recover all transactions when restoring from seed. CurrentAddress is safer as it never extends past the lookahead window.\n\n"+
+			"Args:\n"+
+			"1. purpose       (string default=external) The purpose for the address. Can be external for receiving from outside parties or internal for example, for change.\n\n"+
+			"Examples:\n"+
+			"> spvwallet newaddress\n"+
+			"1DxGWC22a46VPEjq8YKoeVXSLzB7BA8sJS\n"+
+			"> spvwallet newaddress internal\n"+
+			"18zAxgfKx4NuTUGUEuB8p7FKgCYPM15DfS\n",
+		&newAddress)
+	parser.AddCommand("currentaddress",
+		"get the current bitcoin address",
+		"Returns the first unused address in the keychain\n\n"+
+			"Args:\n"+
+			"1. purpose       (string default=external) The purpose for the address. Can be external for receiving from outside parties or internal for example, for change.\n\n"+
+			"Examples:\n"+
+			"> spvwallet currentaddress\n"+
+			"1DxGWC22a46VPEjq8YKoeVXSLzB7BA8sJS\n"+
+			"> spvwallet currentaddress internal\n"+
+			"18zAxgfKx4NuTUGUEuB8p7FKgCYPM15DfS\n",
+		&currentAddress)
+	parser.AddCommand("server",
+		"start the wallet",
+		"The start command starts the wallet daemon",
+		&serverCmd)
+
+	if _, err := parser.Parse(); err != nil {
 		os.Exit(1)
 	}
+
 }

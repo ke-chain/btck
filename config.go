@@ -34,7 +34,7 @@ var (
 	defaultMaxPeers   = 125
 )
 
-type config struct {
+type Config struct {
 	AddPeers          []string `short:"a" long:"addpeer" description:"Add a peer to connect with at startup"`
 	BlocksOnly        bool     `long:"blocksonly" description:"Do not accept transactions from remote peers."`
 	ConnectPeers      []string `long:"connect" description:"Connect only to the specified peers at startup"`
@@ -48,6 +48,7 @@ type config struct {
 	SimNet            bool     `long:"simnet" description:"Use the simulation test network"`
 	TestNet3          bool     `long:"testnet" description:"Use the test network"`
 	UserAgentComments []string `long:"uacomment" description:"Comment to add to the user agent -- See BIP 14 for more information."`
+	RepoPath          string   `long:"repopath" description:"Directory to store keys"`
 
 	lookup     func(string) ([]net.IP, error)
 	oniondial  func(string, string, time.Duration) (net.Conn, error)
@@ -62,7 +63,7 @@ type serviceOptions struct {
 }
 
 // newConfigParser returns a new command line flags parser.
-func newConfigParser(cfg *config, so *serviceOptions, options flags.Options) *flags.Parser {
+func newConfigParser(cfg *Config, so *serviceOptions, options flags.Options) *flags.Parser {
 	parser := flags.NewParser(cfg, options)
 	if runtime.GOOS == "windows" {
 		parser.AddGroup("Service Options", "Service Options", so)
@@ -149,9 +150,9 @@ func createDefaultConfigFile(destinationPath string) error {
 // The above results in btcd functioning properly without any config settings
 // while still allowing the user to override settings with config files and
 // command line options.  Command line options always take precedence.
-func loadConfig() (*config, []string, error) {
+func loadConfig() (*Config, []string, error) {
 	// Default config.
-	cfg := config{
+	cfg := Config{
 		ConfigFile: defaultConfigFile,
 
 		MaxPeers: defaultMaxPeers,

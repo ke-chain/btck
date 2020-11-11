@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ke-chain/btck/blockchain"
+	"github.com/ke-chain/btck/db"
 	"github.com/ke-chain/btck/peer"
 	"github.com/ke-chain/btck/wire"
 
@@ -18,6 +19,9 @@ import (
 	"github.com/ke-chain/btck/netsync"
 
 	"github.com/ke-chain/btck/connmgr"
+
+	hd "github.com/btcsuite/btcutil/hdkeychain"
+	b39 "github.com/tyler-smith/go-bip39"
 )
 
 const (
@@ -332,10 +336,33 @@ func newServer() (*server, error) {
 		return nil, err
 	}
 
+	// Select wallet datastore
+	sqliteDatastore, _ := db.Create(cfg.RepoPath)
+
+	//Create keyManager
+	ent, err := b39.NewEntropy(128)
+	if err != nil {
+		return nil, err
+	}
+	mnemonic, err := b39.NewMnemonic(ent)
+	if err != nil {
+		return nil, err
+	}
+	seed := b39.NewSeed(mnemonic, "")
+	mPrivKey, err := hd.NewMaster(seed, chaincfg.GetbtcdPm(activeNetParams.Params))
+	if err != nil {
+		return nil, err
+	}
+	keyManager, err := blockchain.NewKeyManager(sqliteDatastore.Keys(), activeNetParams.Params, mPrivKey)
+
+	var store *blockchain.TxStore
+	store, err = blockchain.NewTxStore(activeNetParams.Params, sqliteDatastore, keyManager)
+
 	s.syncManager, err = netsync.New(&netsync.Config{
 		Chain:       s.chain,
 		ChainParams: s.chainParams,
 		MaxPeers:    cfg.MaxPeers,
+		TxStore:     store,
 	})
 	if err != nil {
 		return nil, err
