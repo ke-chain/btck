@@ -1,6 +1,5 @@
 .vscode/launch.json
 btck
-go.sum
 btcd/data/simnet/blocks_ffldb/000000000.fdb
 btcd/data/simnet/blocks_ffldb/metadata/000002.log
 btcd/data/simnet/blocks_ffldb/metadata/000003.ldb
