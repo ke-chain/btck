@@ -8,7 +8,9 @@ require (
 	github.com/btcsuite/btcd v0.20.1-beta
 	github.com/btcsuite/btclog v0.0.0-20170628155309-84c8d2346e9f
 	github.com/btcsuite/btcutil v1.0.2
-	github.com/btcsuite/goleveldb v0.0.0-20160330041536-7834afc9e8cd
+	github.com/btcsuite/btcwallet/wallet/txauthor v1.0.0
+	github.com/btcsuite/btcwallet/wallet/txrules v1.0.0
+	github.com/btcsuite/goleveldb v1.0.0
 	github.com/cevaris/ordered_map v0.0.0-20190319150403-3adeae072e73
 	github.com/davecgh/go-spew v1.1.1
 	github.com/decred/dcrd/lru v1.1.0

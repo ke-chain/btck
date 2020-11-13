@@ -121,6 +121,10 @@ func (b *ChainSPV) GetHeader(hash *chainhash.Hash) (StoredHeader, error) {
 	return sh, nil
 }
 
+func (b *ChainSPV) GetDB() Headers {
+	return b.db
+}
+
 // Get the PoW target this block should meet. We may need to handle a difficulty adjustment
 // or testnet difficulty rules.
 func (b *ChainSPV) calcRequiredWork(header wire.BlockHeader, height int32, prevHeader StoredHeader) (uint32, error) {

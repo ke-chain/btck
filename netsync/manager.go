@@ -26,10 +26,28 @@ const (
 	// maxStallDuration is the time after which we will disconnect our
 	// current sync peer if we haven't made progress.
 	maxStallDuration = 3 * time.Minute
+
+	maxRequestedTxns  = wire.MaxInvPerMsg
+	maxFalsePositives = 7
 )
 
 // zeroHash is the zero value hash (all zeros).  It is defined as a convenience.
 var zeroHash chainhash.Hash
+
+//Wait4Spend released when finished broadcasting tx
+
+type heightAndTime struct {
+	height    uint32
+	timestamp time.Time
+}
+
+// txMsg packages a bitcoin tx message and the peer it came from together
+// so the handler has access to that information.
+type txMsg struct {
+	tx    *wire.MsgTx
+	peer  *peerpkg.Peer
+	reply chan struct{}
+}
 
 // SyncManager is used to communicate block related messages with peers. The
 // SyncManager is started as by executing Start() in a goroutine. Once started,
@@ -60,7 +78,9 @@ type SyncManager struct {
 	walletCreationDate time.Time
 
 	// for spv feature
-	txStore *blockchain.TxStore
+	txStore       *blockchain.TxStore
+	requestedTxns map[chainhash.Hash]heightAndTime
+	mempool       map[chainhash.Hash]struct{}
 }
 
 // peerSyncState stores additional information that the SyncManager tracks
@@ -68,8 +88,9 @@ type SyncManager struct {
 type peerSyncState struct {
 	syncCandidate   bool
 	requestQueue    []*wire.InvVect
-	requestedTxns   map[chainhash.Hash]struct{}
+	requestedTxns   map[chainhash.Hash]heightAndTime
 	requestedBlocks map[chainhash.Hash]struct{}
+	falsePositives  uint32
 	blockScore      int32
 }
 
@@ -159,6 +180,36 @@ func (sm *SyncManager) resetHeaderState(newestHash *chainhash.Hash, newestHeight
 	}
 }
 
+func (sm *SyncManager) Broadcast(tx *wire.MsgTx) error {
+	// Our own tx; don't keep track of false positives
+	_, err := sm.txStore.Ingest(tx, 0, time.Now())
+	if err != nil {
+		return err
+	}
+
+	log.Debugf("Broadcasting tx %s to peers", tx.TxHash().String())
+	sm.msgChan <- updateFiltersMsg{}
+	for peer := range sm.peerStates {
+		peer.QueueMessageWithEncoding(tx, nil, wire.WitnessEncoding)
+	}
+	return nil
+}
+
+func (sm *SyncManager) Rebroadcast() {
+	// get all unconfirmed txs
+	invMsg, err := sm.txStore.GetPendingInv()
+	if err != nil {
+		log.Errorf("Rebroadcast error: %s", err.Error())
+	}
+	// Nothing to broadcast, so don't
+	if len(invMsg.InvList) == 0 {
+		return
+	}
+	for peer := range sm.peerStates {
+		peer.QueueMessage(invMsg, nil)
+	}
+}
+
 // startSync will choose the best peer among the available candidate peers to
 // download/sync the blockchain from.  When syncing is already running, it
 // simply returns.  It also examines the candidates for any which are no longer
@@ -168,7 +219,7 @@ func (sm *SyncManager) startSync() {
 	if sm.syncPeer != nil {
 		return
 	}
-
+	sm.Rebroadcast()
 	best, err := sm.chain.BestBlock()
 	if err != nil {
 		log.Error(err.Error())
@@ -234,7 +285,17 @@ func (sm *SyncManager) startSync() {
 
 		sm.syncPeer = bestPeer
 
-		bestPeer.PushGetHeadersMsg(locator, &zeroHash)
+		// If the best header we have was created before this wallet then we can sync just headers
+		// up to the wallet creation date since we know there wont be any transactions in those
+		// blocks we're interested in. However, if we're past the wallet creation date we need to
+		// start downloading merkle blocks so we learn of the wallet's transactions. We'll use a
+		// buffer of one week to make sure we don't miss anything.
+		log.Infof("Starting chain download from %s", bestPeer)
+		if best.GetHeader().Timestamp.Before(sm.walletCreationDate.Add(-time.Hour * 24 * 7)) {
+			bestPeer.PushGetHeadersMsg(locator, &zeroHash)
+		} else {
+			bestPeer.PushGetBlocksMsg(locator, &zeroHash)
+		}
 
 		// Reset the last progress time now that we have a non-nil
 		// syncPeer to avoid instantly detecting it as stalled in the
@@ -255,6 +316,24 @@ func (sm *SyncManager) QueueHeaders(headers *wire.MsgHeaders, peer *peerpkg.Peer
 	}
 
 	sm.msgChan <- &headersMsg{headers: headers, peer: peer}
+}
+
+// QueueHeaders adds the passed headers message and peer to the block handling
+// queue.
+func (sm *SyncManager) QueueMerkleblock(block *wire.MsgMerkleBlock, peer *peerpkg.Peer) {
+	// No channel handling here because peers do not need to block on
+	// headers messages.
+	if atomic.LoadInt32(&sm.shutdown) != 0 {
+		return
+	}
+
+	sm.msgChan <- &merkleBlockMsg{merkleBlock: block, peer: peer}
+}
+
+func (sm *SyncManager) QueueTX(p *peerpkg.Peer, msg *wire.MsgTx) {
+	if sm.msgChan != nil {
+		sm.msgChan <- txMsg{msg, p, nil}
+	}
 }
 
 // QueueInv adds the passed inv message and peer to the block handling queue.
@@ -295,7 +374,7 @@ func (sm *SyncManager) handleNewPeerMsg(peer *peerpkg.Peer) {
 	isSyncCandidate := sm.isSyncCandidate(peer)
 	sm.peerStates[peer] = &peerSyncState{
 		syncCandidate:   isSyncCandidate,
-		requestedTxns:   make(map[chainhash.Hash]struct{}),
+		requestedTxns:   make(map[chainhash.Hash]heightAndTime),
 		requestedBlocks: make(map[chainhash.Hash]struct{}),
 	}
 
@@ -546,14 +625,14 @@ func (sm *SyncManager) handleMerkleBlockMsg(bmsg *merkleBlockMsg) {
 	delete(state.requestedBlocks, blockHash)
 	delete(sm.requestedBlocks, blockHash)
 
-	_, err := checkMBlock(merkleBlock)
+	txids, err := checkMBlock(merkleBlock)
 	if err != nil {
 		log.Warnf("Peer %s sent an invalid MerkleBlock", peer)
 		peer.Disconnect()
 		return
 	}
 
-	newBlock, _, newHeight, err := sm.chain.CommitHeader(header)
+	newBlock, reorg, newHeight, err := sm.chain.CommitHeader(header)
 	// If this is an orphan block which doesn't connect to the chain, it's possible
 	// that we might be synced on the longest chain, but not the most-work chain like
 	// we should be. To make sure this isn't the case, let's sync from the peer who
@@ -589,6 +668,13 @@ func (sm *SyncManager) handleMerkleBlockMsg(bmsg *merkleBlockMsg) {
 		peer.UpdateLastBlockHeight(int32(newHeight))
 	}
 
+	// Request the transactions in this block
+	for _, txid := range txids {
+		sm.requestedTxns[*txid] = heightAndTime{newHeight, header.Timestamp}
+		limitMap(sm.requestedTxns, maxRequestedTxns)
+		state.requestedTxns[*txid] = heightAndTime{newHeight, header.Timestamp}
+	}
+
 	// We can exit here if the block is already known
 	if !newBlock {
 		log.Debugf("Received duplicate block %s", blockHash.String())
@@ -596,6 +682,29 @@ func (sm *SyncManager) handleMerkleBlockMsg(bmsg *merkleBlockMsg) {
 	}
 
 	log.Infof("Received merkle block %s at height %d", blockHash.String(), newHeight)
+
+	// Check reorg
+	if reorg != nil && sm.Current() {
+		// Rollback the appropriate transactions in our database
+		err := sm.txStore.ProcessReorg(uint32(reorg.GetHeight()))
+		if err != nil {
+			log.Error(err.Error())
+		}
+		// Set the reorg block as current best block in the header db
+		// This will cause a new chain sync from the reorg point
+		err = sm.chain.GetDB().Put(*reorg, true)
+		if err != nil {
+			log.Error(err.Error())
+		}
+
+		// Clear request state for new sync
+		state.requestQueue = []*wire.InvVect{}
+		state.requestedBlocks = make(map[chainhash.Hash]struct{})
+		sm.requestedBlocks = make(map[chainhash.Hash]struct{})
+	}
+
+	// Clear mempool
+	sm.mempool = make(map[chainhash.Hash]struct{})
 
 	// If we're not current and we've downloaded everything we've requested send another getblocks message.
 	// Otherwise we'll request the next block in the queue.
@@ -632,10 +741,48 @@ func (sm *SyncManager) haveInventory(invVect *wire.InvVect) (bool, error) {
 			return false, nil
 		}
 		return true, nil
+	case wire.InvTypeTx:
+		// Is transaction already in mempool
+		if _, ok := sm.mempool[invVect.Hash]; ok {
+			return true, nil
+		}
+		return false, nil
 	}
+
 	// The requested inventory is is an unsupported type, so just claim
 	// it is known to avoid requesting it.
 	return true, nil
+}
+
+// limitMap is a helper function for maps that require a maximum limit by
+// evicting a random transaction if adding a new value would cause it to
+// overflow the maximum allowed.
+func limitMap(i interface{}, limit int) {
+	m, ok := i.(map[chainhash.Hash]struct{})
+	if ok {
+		if len(m)+1 > limit {
+			// Remove a random entry from the map.  For most compilers, Go's
+			// range statement iterates starting at a random item although
+			// that is not 100% guaranteed by the spec.  The iteration order
+			// is not important here because an adversary would have to be
+			// able to pull off preimage attacks on the hashing function in
+			// order to target eviction of specific entries anyways.
+			for txHash := range m {
+				delete(m, txHash)
+				return
+			}
+		}
+		return
+	}
+	n, ok := i.(map[chainhash.Hash]uint32)
+	if ok {
+		if len(n)+1 > limit {
+			for txHash := range n {
+				delete(n, txHash)
+				return
+			}
+		}
+	}
 }
 
 // handleInvMsg handles inv messages from all peers.
@@ -685,6 +832,7 @@ func (sm *SyncManager) handleInvMsg(imsg *invMsg) {
 
 	// Request the advertised inventory if we don't already have it
 	gdmsg := wire.NewMsgGetData()
+	numRequested := 0
 	shouldSendGetData := false
 	if len(state.requestQueue) == 0 {
 		shouldSendGetData = true
@@ -716,6 +864,17 @@ func (sm *SyncManager) handleInvMsg(imsg *invMsg) {
 				iv.Type = wire.InvTypeFilteredBlock
 				state.requestQueue = append(state.requestQueue, iv)
 			}
+
+		case wire.InvTypeTx:
+			// Transaction inventory can be requested in batches
+			if _, exists := sm.requestedTxns[iv.Hash]; !exists && numRequested < wire.MaxInvPerMsg && !haveInv {
+				sm.requestedTxns[iv.Hash] = heightAndTime{0, time.Now()} // unconfirmed tx
+				limitMap(sm.requestedTxns, maxRequestedTxns)
+				state.requestedTxns[iv.Hash] = heightAndTime{0, time.Now()}
+
+				gdmsg.AddInvVect(iv)
+				numRequested++
+			}
 		default:
 			continue
 		}
@@ -735,6 +894,57 @@ func (sm *SyncManager) handleInvMsg(imsg *invMsg) {
 	}
 	if len(gdmsg.InvList) > 0 {
 		peer.QueueMessage(gdmsg, nil)
+	}
+}
+
+func (sm *SyncManager) handleTxMsg(tmsg *txMsg) {
+	tx := tmsg.tx
+	peer := tmsg.peer
+	txHash := tx.TxHash()
+
+	state, exists := sm.peerStates[peer]
+	if !exists {
+		log.Warnf("Received tx message from unknown peer %s", peer)
+		return
+	}
+	ht, ok := state.requestedTxns[tx.TxHash()]
+	if !ok {
+		log.Warnf("Peer %s is sending us transactions we didn't request", peer)
+		peer.Disconnect()
+		return
+	}
+	sm.mempool[txHash] = struct{}{}
+	hits, err := sm.txStore.Ingest(tx, int32(ht.height), ht.timestamp)
+	if err != nil {
+		log.Errorf("Error ingesting tx: %s\n", err.Error())
+	}
+
+	// Remove transaction from request maps. Either the mempool/chain
+	// already knows about it and as such we shouldn't have any more
+	// instances of trying to fetch it, or we failed to insert and thus
+	// we'll retry next time we get an inv.
+	delete(state.requestedTxns, txHash)
+	delete(sm.requestedTxns, txHash)
+
+	// If this transaction had no hits, update the peer's false positive counter
+	if hits == 0 {
+		log.Debugf("Tx %s from Peer%d had no hits, filter false positive.", txHash.String(), peer.ID())
+		state.falsePositives++
+	} else {
+		log.Debugf("Ingested new tx %s at height %d", txHash.String(), ht.height)
+	}
+
+	// Check to see if false positives exceeds the maximum allowed. If so, reset and resend the filter.
+	if state.falsePositives > maxFalsePositives {
+		state.falsePositives = 0
+		sm.updateFilterAndSend(peer)
+	}
+}
+
+// handleUpdateFiltersMsg sends a filter update message to all peers
+func (sm *SyncManager) handleUpdateFiltersMsg() {
+	for peer := range sm.peerStates {
+		sm.updateFilterAndSend(peer)
 	}
 }
 
@@ -763,6 +973,10 @@ out:
 				sm.handleMerkleBlockMsg(msg)
 			case *invMsg:
 				sm.handleInvMsg(msg)
+			case txMsg:
+				sm.handleTxMsg(&msg)
+			case updateFiltersMsg:
+				sm.handleUpdateFiltersMsg()
 			default:
 				log.Warnf("Invalid message type in block "+
 					"handler: %T", msg)
@@ -799,12 +1013,14 @@ func New(config *Config) (*SyncManager, error) {
 	sm := SyncManager{
 		chain:           config.Chain,
 		chainParams:     config.ChainParams,
+		requestedTxns:   make(map[chainhash.Hash]heightAndTime),
 		requestedBlocks: make(map[chainhash.Hash]struct{}),
 		peerStates:      make(map[*peerpkg.Peer]*peerSyncState),
 		msgChan:         make(chan interface{}, config.MaxPeers*3),
 		headerList:      list.New(),
 		quit:            make(chan struct{}),
 		txStore:         config.TxStore,
+		mempool:         make(map[chainhash.Hash]struct{}),
 	}
 
 	return &sm, nil

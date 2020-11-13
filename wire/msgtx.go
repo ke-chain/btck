@@ -10,6 +10,8 @@ import (
 	"io"
 	"strconv"
 
+	btcdhash "github.com/btcsuite/btcd/chaincfg/chainhash"
+	btcdwire "github.com/btcsuite/btcd/wire"
 	"github.com/ke-chain/btck/chaincfg/chainhash"
 )
 
@@ -894,6 +896,56 @@ func NewMsgTx(version int32) *MsgTx {
 		Version: version,
 		TxIn:    make([]*TxIn, 0, defaultTxInOutAlloc),
 		TxOut:   make([]*TxOut, 0, defaultTxInOutAlloc),
+	}
+}
+
+func Convert2btcd(tx *MsgTx) *btcdwire.MsgTx {
+	ins := make([]*btcdwire.TxIn, 0, defaultTxInOutAlloc)
+	outs := make([]*btcdwire.TxOut, 0, defaultTxInOutAlloc)
+	for _, in := range tx.TxIn {
+		ins = append(ins, &btcdwire.TxIn{
+			PreviousOutPoint: btcdwire.OutPoint{btcdhash.Hash(in.PreviousOutPoint.Hash), in.PreviousOutPoint.Index},
+			SignatureScript:  in.SignatureScript,
+			Witness:          btcdwire.TxWitness(in.Witness),
+			Sequence:         in.Sequence,
+		})
+	}
+
+	for _, out := range tx.TxOut {
+		outs = append(outs, &btcdwire.TxOut{
+			Value:    out.Value,
+			PkScript: out.PkScript,
+		})
+	}
+	return &btcdwire.MsgTx{
+		Version: tx.Version,
+		TxIn:    ins,
+		TxOut:   outs,
+	}
+}
+
+func Convert2btck(tx *btcdwire.MsgTx) *MsgTx {
+	ins := make([]*TxIn, 0, defaultTxInOutAlloc)
+	outs := make([]*TxOut, 0, defaultTxInOutAlloc)
+	for _, in := range tx.TxIn {
+		ins = append(ins, &TxIn{
+			PreviousOutPoint: OutPoint{chainhash.Hash(in.PreviousOutPoint.Hash), in.PreviousOutPoint.Index},
+			SignatureScript:  in.SignatureScript,
+			Witness:          TxWitness(in.Witness),
+			Sequence:         in.Sequence,
+		})
+	}
+
+	for _, out := range tx.TxOut {
+		outs = append(outs, &TxOut{
+			Value:    out.Value,
+			PkScript: out.PkScript,
+		})
+	}
+	return &MsgTx{
+		Version: tx.Version,
+		TxIn:    ins,
+		TxOut:   outs,
 	}
 }
 

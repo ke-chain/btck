@@ -154,3 +154,31 @@ func (km *KeyManager) GetCurrentKey(purpose wallet.KeyPurpose) (*hd.ExtendedKey,
 	}
 	return km.generateChildKey(purpose, uint32(i[0]))
 }
+
+// Mark the given key as used and extend the lookahead window
+func (km *KeyManager) MarkKeyAsUsed(scriptAddress []byte) error {
+	if err := km.datastore.MarkKeyAsUsed(scriptAddress); err != nil {
+		return err
+	}
+	return km.lookahead()
+}
+
+func (km *KeyManager) GetKeyForScript(scriptAddress []byte) (*hd.ExtendedKey, error) {
+	keyPath, err := km.datastore.GetPathForKey(scriptAddress)
+	if err != nil {
+		key, err := km.datastore.GetKey(scriptAddress)
+		if err != nil {
+			return nil, err
+		}
+		hdKey := hd.NewExtendedKey(
+			km.params.HDPrivateKeyID[:],
+			key.Serialize(),
+			make([]byte, 32),
+			[]byte{0x00, 0x00, 0x00, 0x00},
+			0,
+			0,
+			true)
+		return hdKey, nil
+	}
+	return km.generateChildKey(keyPath.Purpose, uint32(keyPath.Index))
+}

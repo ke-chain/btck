@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/btcsuite/btcutil"
 	"github.com/jessevdk/go-flags"
 )
 
@@ -27,7 +26,7 @@ const (
 )
 
 var (
-	defaultHomeDir    = btcutil.AppDataDir("btck", false)
+	defaultHomeDir    = "" //btcutil.AppDataDir("btck", false)
 	defaultConfigFile = filepath.Join(defaultHomeDir, defaultConfigFilename)
 	defaultDataDir    = filepath.Join(defaultHomeDir, defaultDataDirname)
 	defaultLogDir     = filepath.Join(defaultHomeDir, defaultLogDirname)
@@ -186,27 +185,25 @@ func loadConfig() (*Config, []string, error) {
 	// Load additional config from file.
 	var configFileError error
 	parser := newConfigParser(&cfg, &serviceOpts, flags.Default)
-	if preCfg.ConfigFile != defaultConfigFile {
 
-		if _, err := os.Stat(preCfg.ConfigFile); os.IsNotExist(err) {
-			err := createDefaultConfigFile(preCfg.ConfigFile)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error creating a "+
-					"default config file: %v\n", err)
-			}
-		}
-
-		fmt.Printf("preCfg.ConfigFile: %s", preCfg.ConfigFile)
-		err := flags.NewIniParser(parser).ParseFile(preCfg.ConfigFile)
+	if _, err := os.Stat(preCfg.ConfigFile); os.IsNotExist(err) {
+		err := createDefaultConfigFile(preCfg.ConfigFile)
 		if err != nil {
-			if _, ok := err.(*os.PathError); !ok {
-				fmt.Fprintf(os.Stderr, "Error parsing config "+
-					"file: %v\n", err)
-				fmt.Fprintln(os.Stderr, usageMessage)
-				return nil, nil, err
-			}
-			configFileError = err
+			fmt.Fprintf(os.Stderr, "Error creating a "+
+				"default config file: %v\n", err)
 		}
+	}
+
+	fmt.Printf("preCfg.ConfigFile: %s", preCfg.ConfigFile)
+	err = flags.NewIniParser(parser).ParseFile(preCfg.ConfigFile)
+	if err != nil {
+		if _, ok := err.(*os.PathError); !ok {
+			fmt.Fprintf(os.Stderr, "Error parsing config "+
+				"file: %v\n", err)
+			fmt.Fprintln(os.Stderr, usageMessage)
+			return nil, nil, err
+		}
+		configFileError = err
 	}
 
 	// Multiple networks can't be selected simultaneously.

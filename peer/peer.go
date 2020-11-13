@@ -48,6 +48,9 @@ var (
 	// nodeCount is the total number of peer connections made since startup
 	// and is used to assign an id to a peer.
 	nodeCount int32
+
+	//WaitForAll is used to wait for all peer actions,and then wen can close the server
+	WaitForAll sync.WaitGroup
 )
 
 // NOTE: The overall data flow of a peer is split into 3 goroutines.  Inbound
@@ -188,6 +191,13 @@ type MessageListeners struct {
 
 	// OnHeaders is invoked when a peer receives a headers bitcoin message.
 	OnHeaders func(p *Peer, msg *wire.MsgHeaders)
+
+	// OnMerkleBlock  is invoked when a peer receives a merkleblock bitcoin
+	// message.
+	OnMerkleBlock func(p *Peer, msg *wire.MsgMerkleBlock)
+
+	// OnTx is invoked when a peer receives a tx bitcoin message.
+	OnTx func(p *Peer, msg *wire.MsgTx)
 }
 
 // outMsg is used to house a message to be sent along with a channel to signal
@@ -715,6 +725,15 @@ out:
 				p.cfg.Listeners.OnHeaders(p, msg)
 			}
 
+		case *wire.MsgMerkleBlock:
+			if p.cfg.Listeners.OnMerkleBlock != nil {
+				p.cfg.Listeners.OnMerkleBlock(p, msg)
+			}
+		case *wire.MsgTx:
+			if p.cfg.Listeners.OnTx != nil {
+				p.cfg.Listeners.OnTx(p, msg)
+			}
+
 		default:
 			log.Debugf("Received unhandled message of type %v "+
 				"from %v", rmsg.Command(), p)
@@ -781,7 +800,6 @@ func (p *Peer) queueHandler() {
 			// asynchronously send.
 			val := pendingMsgs.Remove(next)
 			p.sendQueue <- val.(outMsg)
-
 		}
 	}
 }
@@ -967,6 +985,17 @@ func (p *Peer) Addr() string {
 	// The address doesn't change after initialization, therefore it is not
 	// protected by a mutex.
 	return p.addr
+}
+
+// ID returns the peer id.
+//
+// This function is safe for concurrent access.
+func (p *Peer) ID() int32 {
+	p.flagsMtx.Lock()
+	id := p.id
+	p.flagsMtx.Unlock()
+
+	return id
 }
 
 // start begins processing input and output messages.

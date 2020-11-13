@@ -8,6 +8,7 @@ import (
 	"runtime/debug"
 
 	"github.com/jessevdk/go-flags"
+	"github.com/ke-chain/btck/wire"
 )
 
 var (
@@ -20,7 +21,7 @@ var (
 // optional serverChan parameter is mainly used by the service code to be
 // notified with the server once it is setup so it can gracefully stop it when
 // requested from the service control manager.
-func btcdMain() error {
+func btcdMain(tx *wire.MsgTx) error {
 
 	setLogLevels("TRC")
 	// Load configuration and parse command line.  This function also
@@ -54,7 +55,24 @@ func btcdMain() error {
 		server.WaitForShutdown()
 		srvrLog.Infof("Server shutdown complete")
 	}()
+
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt)
+	go func() {
+		for range c {
+			fmt.Println("SPVWallet shutting down...")
+			server.Stop()
+			server.WaitForShutdown()
+			srvrLog.Infof("Server shutdown complete")
+			os.Exit(1)
+		}
+	}()
+
 	server.Start()
+
+	if tx != nil {
+		server.syncManager.Broadcast(tx)
+	}
 
 	// Wait until the interrupt signal is received from an OS signal or
 	// shutdown is requested through one of the subsystems such as the RPC
@@ -72,15 +90,6 @@ func main() {
 	// bursts.  This value was arrived at with the help of profiling live
 	// usage.
 	debug.SetGCPercent(10)
-
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt)
-	go func() {
-		for range c {
-			fmt.Println("SPVWallet shutting down...")
-			os.Exit(1)
-		}
-	}()
 
 	parser.AddCommand("newaddress",
 		"get a new bitcoin address",
@@ -104,6 +113,39 @@ func main() {
 			"> spvwallet currentaddress internal\n"+
 			"18zAxgfKx4NuTUGUEuB8p7FKgCYPM15DfS\n",
 		&currentAddress)
+	parser.AddCommand("listaddresses",
+		"list all addresses",
+		"Returns all addresses currently watched by the wallet",
+		&listAddresses)
+	parser.AddCommand("addwatchedscript",
+		"add a script to watch",
+		"Add a script of bitcoin address to watch\n\n"+
+			"Args:\n"+
+			"1. script       (string) A hex encoded output script or bitcoin address.\n\n"+
+			"Examples:\n"+
+			"> spvwallet addwatchedscript 1DxGWC22a46VPEjq8YKoeVXSLzB7BA8sJS\n"+
+			"> spvwallet addwatchedscript 76a914f318374559bf8296228e9c7480578a357081d59988ac\n",
+		&addWatchedAddress)
+
+	parser.AddCommand("balance",
+		"get the wallet balance",
+		"Returns both the confirmed and unconfirmed balances",
+		&balance)
+	parser.AddCommand("transactions",
+		"get a list of transactions",
+		"Returns a json list of the wallet's transactions",
+		&transactions)
+
+	parser.AddCommand("spend",
+		"send bitcoins",
+		"Send bitcoins to the given address\n\n"+
+			"Args:\n"+
+			"1. address       (string) The recipient's bitcoin address\n"+
+			"2. amount        (integer) The amount to send in satoshi"+
+			"Examples:\n"+
+			"> spvwallet spend 1DxGWC22a46VPEjq8YKoeVXSLzB7BA8sJS 1000000\n"+
+			"82bfd45f3564e0b5166ab9ca072200a237f78499576e9658b20b0ccd10ff325c",
+		&spend)
 	parser.AddCommand("server",
 		"start the wallet",
 		"The start command starts the wallet daemon",

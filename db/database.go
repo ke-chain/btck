@@ -22,39 +22,43 @@ type SQLiteDatastore struct {
 	lock           *sync.RWMutex
 }
 
-func Create(repoPath string) (*SQLiteDatastore, error) {
-	dbPath := path.Join(repoPath, "wallet.db")
-	conn, err := sql.Open("sqlite3", dbPath)
-	if err != nil {
-		return nil, err
-	}
+var once sync.Once
+var sqliteDB *SQLiteDatastore
 
-	l := new(sync.RWMutex)
-	sqliteDB := &SQLiteDatastore{
-		keys: &KeysDB{
+func Create(repoPath string) (*SQLiteDatastore, error) {
+
+	once.Do(func() {
+		dbPath := path.Join(repoPath, "wallet.db")
+		conn, _ := sql.Open("sqlite3", dbPath)
+
+		l := new(sync.RWMutex)
+		sqliteDB = &SQLiteDatastore{
+			keys: &KeysDB{
+				db:   conn,
+				lock: l,
+			},
+			utxos: &UtxoDB{
+				db:   conn,
+				lock: l,
+			},
+			stxos: &StxoDB{
+				db:   conn,
+				lock: l,
+			},
+			txns: &TxnsDB{
+				db:   conn,
+				lock: l,
+			},
+			watchedScripts: &WatchedScriptsDB{
+				db:   conn,
+				lock: l,
+			},
 			db:   conn,
 			lock: l,
-		},
-		utxos: &UtxoDB{
-			db:   conn,
-			lock: l,
-		},
-		stxos: &StxoDB{
-			db:   conn,
-			lock: l,
-		},
-		txns: &TxnsDB{
-			db:   conn,
-			lock: l,
-		},
-		watchedScripts: &WatchedScriptsDB{
-			db:   conn,
-			lock: l,
-		},
-		db:   conn,
-		lock: l,
-	}
-	initDatabaseTables(conn)
+		}
+		initDatabaseTables(conn)
+	})
+
 	return sqliteDB, nil
 }
 

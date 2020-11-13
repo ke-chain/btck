@@ -19,9 +19,6 @@ import (
 	"github.com/ke-chain/btck/netsync"
 
 	"github.com/ke-chain/btck/connmgr"
-
-	hd "github.com/btcsuite/btcutil/hdkeychain"
-	b39 "github.com/tyler-smith/go-bip39"
 )
 
 const (
@@ -98,13 +95,23 @@ func (sp *serverPeer) OnHeaders(_ *peer.Peer, msg *wire.MsgHeaders) {
 	sp.server.syncManager.QueueHeaders(msg, sp.Peer)
 }
 
+func (sp *serverPeer) onMerkleBlock(p *peer.Peer, msg *wire.MsgMerkleBlock) {
+	sp.server.syncManager.QueueMerkleblock(msg, sp.Peer)
+}
+
+func (sp *serverPeer) onTX(p *peer.Peer, msg *wire.MsgTx) {
+	sp.server.syncManager.QueueTX(sp.Peer, msg)
+}
+
 // newPeerConfig returns the configuration for the given serverPeer.
 func newPeerConfig(sp *serverPeer) *peer.Config {
 	return &peer.Config{
 		Listeners: peer.MessageListeners{
-			OnInv:     sp.OnInv,
-			OnVerAck:  sp.OnVerAck,
-			OnHeaders: sp.OnHeaders,
+			OnInv:         sp.OnInv,
+			OnVerAck:      sp.OnVerAck,
+			OnHeaders:     sp.OnHeaders,
+			OnMerkleBlock: sp.onMerkleBlock,
+			OnTx:          sp.onTX,
 		},
 		UserAgentName:     userAgentName,
 		UserAgentVersion:  userAgentVersion,
@@ -329,34 +336,18 @@ func newServer() (*server, error) {
 	s := server{
 		newPeers: make(chan *serverPeer, cfg.MaxPeers),
 	}
+	// create store
+	repoPath := ""
+	sqliteDatastore, _ := db.Create(repoPath)
+	cd, _ := sqliteDatastore.GetCreationDate()
+	store, _ := newDefaultStore(sqliteDatastore)
+
 	// Create a new block chain instance with the appropriate configuration.
 	var err error
-	s.chain, err = blockchain.NewBlockchainSPV(cfg.DataDir, time.Now(), activeNetParams.Params)
+	s.chain, err = blockchain.NewBlockchainSPV(cfg.DataDir, cd, activeNetParams.Params)
 	if err != nil {
 		return nil, err
 	}
-
-	// Select wallet datastore
-	sqliteDatastore, _ := db.Create(cfg.RepoPath)
-
-	//Create keyManager
-	ent, err := b39.NewEntropy(128)
-	if err != nil {
-		return nil, err
-	}
-	mnemonic, err := b39.NewMnemonic(ent)
-	if err != nil {
-		return nil, err
-	}
-	seed := b39.NewSeed(mnemonic, "")
-	mPrivKey, err := hd.NewMaster(seed, chaincfg.GetbtcdPm(activeNetParams.Params))
-	if err != nil {
-		return nil, err
-	}
-	keyManager, err := blockchain.NewKeyManager(sqliteDatastore.Keys(), activeNetParams.Params, mPrivKey)
-
-	var store *blockchain.TxStore
-	store, err = blockchain.NewTxStore(activeNetParams.Params, sqliteDatastore, keyManager)
 
 	s.syncManager, err = netsync.New(&netsync.Config{
 		Chain:       s.chain,

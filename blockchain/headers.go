@@ -93,33 +93,38 @@ func (h *StoredHeader) BlockHash() *chainhash.Hash {
 	return &hash
 }
 
+var h *HeaderDB
+var once sync.Once
+
 func NewHeaderDB(filePath string) (*HeaderDB, error) {
-	if !strings.Contains(filePath, ".bin") {
-		filePath = path.Join(filePath, "headers.bin")
-	}
-	h := new(HeaderDB)
-	db, err := bolt.Open(filePath, 0644, &bolt.Options{InitialMmapSize: 5000000})
-	if err != nil {
-		return nil, err
-	}
-	h.db = db
-	h.lock = new(sync.Mutex)
-	h.filePath = filePath
-	h.cache = &HeaderCache{ordered_map.NewOrderedMap(), sync.RWMutex{}, CACHE_SIZE}
+	once.Do(func() {
+		if !strings.Contains(filePath, ".bin") {
+			filePath = path.Join(filePath, "headers.bin")
+		}
+		h = new(HeaderDB)
+		db, err := bolt.Open(filePath, 0644, &bolt.Options{InitialMmapSize: 5000000})
+		if err != nil {
+			fmt.Println("NewHeaderDB:", err)
+		}
+		h.db = db
+		h.lock = new(sync.Mutex)
+		h.filePath = filePath
+		h.cache = &HeaderCache{ordered_map.NewOrderedMap(), sync.RWMutex{}, CACHE_SIZE}
 
-	db.Update(func(btx *bolt.Tx) error {
-		_, err := btx.CreateBucketIfNotExists(BKTHeaders)
-		if err != nil {
-			return err
-		}
-		_, err = btx.CreateBucketIfNotExists(BKTChainTip)
-		if err != nil {
-			return err
-		}
-		return nil
+		db.Update(func(btx *bolt.Tx) error {
+			_, err := btx.CreateBucketIfNotExists(BKTHeaders)
+			if err != nil {
+				return err
+			}
+			_, err = btx.CreateBucketIfNotExists(BKTChainTip)
+			if err != nil {
+				return err
+			}
+			return nil
+		})
+
+		h.initializeCache()
 	})
-
-	h.initializeCache()
 	return h, nil
 }
 

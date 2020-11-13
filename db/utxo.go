@@ -27,7 +27,7 @@ func (u *UtxoDB) Put(utxo wallet.Utxo) error {
 		tx.Rollback()
 		return err
 	}
-	outpoint := utxo.Op.Hash.String() + ":" + strconv.Itoa(int(utxo.Op.Index))
+	outpoint := utxo.Op.Hash.String() + ":" + strconv.FormatUint(uint64(utxo.Op.Index), 10)
 	watchOnly := 0
 	if utxo.WatchOnly {
 		watchOnly = 1
