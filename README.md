@@ -27,23 +27,19 @@ $ btcwallet -C ./btcwallet.con
 3. 创建钱包用户
 ```
 $ btcctl -C ./btcctl-wallet.conf walletpassphrase 1 3600
-$ btcctl -C ./btcctl-wallet.conf createnewaccount alice
 $ btcctl -C ./btcctl-wallet.conf listaccounts
 {
-  "alice": 0,
   "default": 0,
   "imported": 0
 }
 ```
 
-4. 查看miner和alice的地址
+4. 查看miner的地址
 ```
 // Unlock your wallet first
 $ btcctl -C ./btcctl-wallet.conf walletpassphrase 1 3600
 $ btcctl -C ./btcctl-wallet.conf getnewaddress
 MINER_ADDRESS
-$ btcctl -C ./btcctl-wallet.conf getnewaddress alice
-ALICE_ADDRESS
 ```
 5. 使用miner地址重启btcd server
 ```
@@ -58,8 +54,28 @@ $ btcctl -C ./btcctl-wallet.conf getbalance
 50
 ```
 
-7. 运行代码btck
+7. **生成我的地址MY_ADDRESS**
 ``` sh
-$  go run ./ --configfile ./configke.conf
+$  go run ./ newaddress 
+MY_ADDRESS
+```
 
+8. 给MY_ADDRESS转10个btc
+```sh
+$   btcctl -C ./btcctl-wallet.conf sendtoaddress MY_ADDRESS 10
+```
+
+9. **获取余额**
+```sh
+$   go run ./ newaddress  
+```
+
+10. **消费**
+```sh
+$   go run ./ spend MINER_ADDRESS 5  
+```
+
+11. **获取消费后的余额**
+```sh
+$   go run ./ newaddress  
 ```

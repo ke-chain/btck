@@ -103,7 +103,6 @@ var balance Balance
 func (x *Balance) Execute(args []string) error {
 
 	confirmed, unconfirmed := newWalllet().Balance()
-	fmt.Println(confirmed, unconfirmed)
 	fmt.Println(btcutil.Amount(confirmed).ToBTC(), btcutil.Amount(unconfirmed).ToBTC())
 	return nil
 }

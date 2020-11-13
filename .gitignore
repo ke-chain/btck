@@ -10,3 +10,6 @@ btcd/data/simnet/blocks_ffldb/metadata/LOCK
 btcd/data/simnet/blocks_ffldb/metadata/LOG
 btcd/data/simnet/blocks_ffldb/metadata/MANIFEST-000000
 btcd/data/simnet/peers.json
+blockchain/-- SQLite.sql
+wallet.db
+data/simnet/headers.bin
